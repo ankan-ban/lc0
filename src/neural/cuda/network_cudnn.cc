@@ -38,6 +38,7 @@
 #include "utils/exception.h"
 
 //#define DEBUG_RAW_NPS
+#define DEBUG_TIME_BREAKDOWN
 
 namespace lczero {
 using namespace cudnn_backend;
@@ -325,9 +326,24 @@ class CudnnNetwork : public Network {
     auto t_start = std::chrono::high_resolution_clock::now();
 #endif
 
+#ifdef DEBUG_TIME_BREAKDOWN
+    cudaEvent_t start, inputCopied, policyWriteStart, policyWriteEnd,
+        valueWriteStart, end;
+    cudaEventCreate(&start);
+    cudaEventCreate(&inputCopied);
+    cudaEventCreate(&policyWriteStart);
+    cudaEventCreate(&policyWriteEnd);
+    cudaEventCreate(&valueWriteStart);
+    cudaEventCreate(&end);
+#endif
+
     // expand packed planes to full planes
     uint64_t* ipDataMasks = io->input_masks_mem_gpu_;
     float* ipDataValues = io->input_val_mem_gpu_;
+
+#ifdef DEBUG_TIME_BREAKDOWN
+    cudaEventRecord(start, NULL);
+#endif
 
     if (std::is_same<half, DataType>::value) {
       expandPlanes_Fp16_NHWC((half*)(tensor_mem_[0]), ipDataMasks, ipDataValues,
@@ -336,6 +352,11 @@ class CudnnNetwork : public Network {
       expandPlanes_Fp32_NCHW((float*)(tensor_mem_[0]), ipDataMasks,
                              ipDataValues, batchSize * kInputPlanes);
     }
+
+#ifdef DEBUG_TIME_BREAKDOWN
+    // host memory -> device memory transfer (over PCIE) done
+    cudaEventRecord(inputCopied, NULL);
+#endif
 
     float* opPol = io->op_policy_mem_gpu_;
     float* opVal = io->op_value_mem_gpu_;
@@ -372,13 +393,24 @@ class CudnnNetwork : public Network {
       network_[l++]->Eval(batchSize, tensor_mem_[1], tensor_mem_[0], nullptr,
                           scratch_mem_, scratch_size_, cudnn_,
                           cublas_);  // pol softmax
+
+#ifdef DEBUG_TIME_BREAKDOWN
+      cudaEventRecord(policyWriteStart, NULL);
+#endif
       copyTypeConverted(opPol, (half*)(tensor_mem_[1]),
                         batchSize * kNumOutputPolicy);  // POLICY
     } else {
+#ifdef DEBUG_TIME_BREAKDOWN
+      cudaEventRecord(policyWriteStart, NULL);
+#endif
       network_[l++]->Eval(batchSize, (DataType*)opPol, tensor_mem_[0], nullptr,
                           scratch_mem_, scratch_size_, cudnn_,
                           cublas_);  // pol softmax  // POLICY
     }
+
+#ifdef DEBUG_TIME_BREAKDOWN
+    cudaEventRecord(policyWriteEnd, NULL);
+#endif
 
     // value head
     network_[l++]->Eval(batchSize, tensor_mem_[0], tensor_mem_[2], nullptr,
@@ -396,12 +428,22 @@ class CudnnNetwork : public Network {
       network_[l++]->Eval(batchSize, tensor_mem_[2], tensor_mem_[0], nullptr,
                           scratch_mem_, scratch_size_, cudnn_,
                           cublas_);  // value FC2
+
+#ifdef DEBUG_TIME_BREAKDOWN
+      cudaEventRecord(valueWriteStart, NULL);
+#endif
       copyTypeConverted(opVal, (half*)(tensor_mem_[2]), batchSize);  // VALUE
     } else {
+#ifdef DEBUG_TIME_BREAKDOWN
+      cudaEventRecord(valueWriteStart, NULL);
+#endif
       network_[l++]->Eval(batchSize, (DataType*)opVal, tensor_mem_[0], nullptr,
                           scratch_mem_, scratch_size_, cudnn_,
                           cublas_);  // value FC2    // VALUE
     }
+#ifdef DEBUG_TIME_BREAKDOWN
+    cudaEventRecord(end, NULL);
+#endif
     ReportCUDAErrors(cudaDeviceSynchronize());
 
 #ifdef DEBUG_RAW_NPS
@@ -428,6 +470,61 @@ class CudnnNetwork : public Network {
       sumBatchSize = 0;
       totalTime = 0;
       numCalls = 0;
+    }
+#endif
+
+#ifdef DEBUG_TIME_BREAKDOWN
+    {
+      const int reportingCalls = 100;
+      static int numCalls = 0;
+      static int sumBatchSize = 0;
+
+      static double totalDataReadTime = 0;
+      static double totalPolicyWriteTime = 0;
+      static double totalValueWriteTime = 0;
+      static double totalGPUTime = 0;
+
+      float dataReadTime = 0;
+      float policyWriteTime = 0;
+      float valueWriteTime = 0;
+      float gpuTime = 0;
+
+      sumBatchSize += batchSize;
+      numCalls++;
+
+      cudaEventSynchronize(end);
+
+      cudaEventElapsedTime(&dataReadTime, start, inputCopied);
+      cudaEventElapsedTime(&policyWriteTime, policyWriteStart, policyWriteEnd);
+      cudaEventElapsedTime(&valueWriteTime, valueWriteStart, end);
+      cudaEventElapsedTime(&gpuTime, start, end);
+
+      totalDataReadTime += dataReadTime;
+      totalPolicyWriteTime += policyWriteTime;
+      totalValueWriteTime += valueWriteTime;
+      totalGPUTime += gpuTime;
+
+      if (numCalls == reportingCalls) {
+        double avgBatchSize = ((double)sumBatchSize) / numCalls;
+        double nps = (sumBatchSize * 1000) / totalGPUTime;
+        double percentOnPCIE =
+            (totalDataReadTime + totalPolicyWriteTime + totalValueWriteTime) *
+            100.0 / totalGPUTime;
+        printf(
+            "\nAvg batch size: %lf, input read time: %lf ms, policy write "
+            "time: %lf ms, value write time: %lf ms, total NN eval time: %lf (per "
+            "%d evals). NPS: %g\n"
+            "percentage of time spent in reading/writing over PCIE: %lf\n",
+            avgBatchSize, totalDataReadTime, totalPolicyWriteTime,
+            totalValueWriteTime, totalGPUTime, sumBatchSize, nps, percentOnPCIE);
+
+        sumBatchSize = 0;
+        numCalls = 0;
+        totalDataReadTime = 0;
+        totalPolicyWriteTime = 0;
+        totalValueWriteTime = 0;
+        totalGPUTime = 0;
+      }
     }
 #endif
   }
