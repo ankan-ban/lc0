@@ -29,6 +29,8 @@
 #include <cmath>
 #include <functional>
 
+#include "alphaBeta/alphaBetaSearch.h"
+
 #include "engine.h"
 #include "mcts/search.h"
 #include "utils/configfile.h"
@@ -392,6 +394,20 @@ void EngineController::Go(const GoParams& params) {
     };
   }
 
+  // Ankan - HACK, redirect to alpha-beta search
+  if (true)
+  {
+    printf("\nAnkan - starting AB search\n");  // Ankan - for testing!
+
+    ab_search_ = std::make_unique<AlphaBetaSearch>(
+        *tree_, network_.get(), best_move_callback, info_callback, limits,
+        options_, &cache_, syzygy_tb_.get(), tt_);
+
+    ab_search_->StartThreads(1);
+    return;
+  }
+
+  // Ankan - the search starts from here!
   search_ = std::make_unique<Search>(*tree_, network_.get(), best_move_callback,
                                      info_callback, limits, options_, &cache_,
                                      syzygy_tb_.get());
@@ -400,6 +416,9 @@ void EngineController::Go(const GoParams& params) {
     LOGFILE << "Timer started at "
             << FormatTime(SteadyClockToSystemClock(move_start_time_));
   }
+
+  printf("\nAnkan - starting search\n");    // Ankan - for testing!
+
   search_->StartThreads(options_.Get<int>(kThreadsOptionId.GetId()));
 }
 
@@ -411,6 +430,12 @@ void EngineController::PonderHit() {
 
 void EngineController::Stop() {
   if (search_) search_->Stop();
+  
+  if (ab_search_)
+  {
+    ab_search_->Stop();
+    ab_search_->Wait();
+  }
 }
 
 EngineLoop::EngineLoop()

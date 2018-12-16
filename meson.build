@@ -92,6 +92,7 @@ files += [
   'src/mcts/node.cc',
   'src/mcts/params.cc',
   'src/mcts/search.cc',
+  'src/alphaBeta/alphaBetaSearch.cc',  
   'src/neural/cache.cc',
   'src/neural/encoder.cc',
   'src/neural/factory.cc',

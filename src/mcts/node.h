@@ -486,6 +486,7 @@ class NodeTree {
   // or if it's shorter than before.
   bool ResetToPosition(const std::string& starting_fen,
                        const std::vector<Move>& moves);
+  void PopHistory() { history_.Pop(); }
   const Position& HeadPosition() const { return history_.Last(); }
   int GetPlyCount() const { return HeadPosition().GetGamePly(); }
   bool IsBlackToMove() const { return HeadPosition().IsBlackToMove(); }
