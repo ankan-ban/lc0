@@ -46,33 +46,57 @@ using namespace cudnn_backend;
 
 static constexpr int kNumOutputPolicy = 1858;
 
-#if 0
-// debug code to dump allocation in GPU memory
-void dumpTensor(void *memory, int elements, char *message, bool fp16 = false)
-{
-    printf("\n%s\n", message);
-    int elementSize = (int) (fp16 ? sizeof(half) : sizeof(float));
-    int bytes = elements * elementSize;
-    void *temp = malloc(bytes);
-    cudaMemcpy(temp, memory, bytes, cudaMemcpyDeviceToHost);
+#if 1
 
-    for (int i = 0; i < elements; i++)
-    {
-        float val;
-        if (fp16) 
-        {
-            half *arr = (half*)temp;
-            val = (float)arr[i];
-        }
-        else
-        {
-            float *arr = (float *)temp;
-            val = arr[i];
-        }
-        printf("%10.4f ", val);
+template <typename T>
+void nhwc_to_nchw(T* arr, int elements, int C) {
+  T* temp = new T[elements];
+
+  for (int i = 0; i < elements; i++) {
+    // i is output index
+    // output in nchw
+    int index = i;
+    int hw = index % 64;
+    index /= 64;
+    int c = index % C;
+    index /= C;
+    int n = index;
+
+    // input is in nhwc
+    int inputIndex = n * 64 * C + hw * C + c;
+    temp[i] = arr[inputIndex];
+  }
+
+  memcpy(arr, temp, sizeof(T) * elements);
+
+  delete[] temp;
+}
+
+// debug code to dump allocation in GPU memory
+void dumpTensor(void* memory, int elements, int C, char* message, bool fp16 = false) {
+  printf("\n%s\n", message);
+  int elementSize = (int)(fp16 ? sizeof(half) : sizeof(float));
+  int bytes = elements * elementSize;
+  void* temp = malloc(bytes);
+  cudaMemcpy(temp, memory, bytes, cudaMemcpyDeviceToHost);
+
+  // convert from nhwc to nchw
+  //if (fp16) nhwc_to_nchw((half*)temp, elements, C);
+
+  for (int i = 0; i < elements; i++) {
+    float val;
+    if (fp16) {
+      half* arr = (half*)temp;
+      val = (float)arr[i];
+    } else {
+      float* arr = (float*)temp;
+      val = arr[i];
     }
-    free(temp);
-    printf("\n");
+    printf("%10.4f ", val);
+    if ((i % 8) == 7) printf("\n");
+  }
+  free(temp);
+  printf("\n");
 }
 #endif
 
@@ -238,8 +262,7 @@ class CudnnNetwork : public Network {
       }
 
       // Override if forced from backend option
-      if (!options.IsDefault<bool>("nhwc")) 
-          nhwc_ = options.Get<bool>("nhwc");
+      if (!options.IsDefault<bool>("nhwc")) nhwc_ = options.Get<bool>("nhwc");
 
       if (nhwc_)
         ReportCUBLASErrors(cublasSetMathMode(cublas_, CUBLAS_TENSOR_OP_MATH));
@@ -249,6 +272,7 @@ class CudnnNetwork : public Network {
     const int kNumFilters = weights.input.biases.size();
 
     numBlocks_ = weights.residual.size();
+    numFilters_ = kNumFilters;
 
     has_se_ = false;
 
@@ -478,7 +502,8 @@ class CudnnNetwork : public Network {
     }
 
     // debug code example
-    // dumpTensor(tensor_mem_[0], 512, "After expand Planes", fp16);
+    // dumpTensor(tensor_mem_[0], kInputPlanes*64, kInputPlanes,
+    //            "After expand Planes", fp16);
 
     float* opPol = io->op_policy_mem_gpu_;
     float* opVal = io->op_value_mem_gpu_;
@@ -685,6 +710,7 @@ class CudnnNetwork : public Network {
   // by allocating more memory).
   mutable std::mutex lock_;
 
+  int numFilters_;
   int numBlocks_;
   bool has_se_;
   bool conv_policy_;
