@@ -31,8 +31,8 @@ class DxNetwork;
 
 static constexpr int kNumOutputPolicy = 1858;
 
-// Padding needed because on some HW (e.g: NV) fp16 requires gemm matrix dimensions
-// to be multiples of 8
+// Padding needed because on some HW (e.g: NV) fp16 requires gemm matrix
+// dimensions to be multiples of 8
 static constexpr int kNumOutputPolicyPadded8 =
     ((kNumOutputPolicy - 1) / 8 + 1) * 8;
 
@@ -40,8 +40,7 @@ static constexpr int kNumOutputPolicyPadded8 =
 static constexpr int kNumOutputValuePadded8 = 8;
 
 struct InputsOutputsDx {
-  InputsOutputsDx(int maxBatchSize, DxContext* pContext, bool wdl,
-                  bool conv_policy, bool fp16);
+  InputsOutputsDx(DxNetwork* network);
   ~InputsOutputsDx();
 
   // In default heap (video memory, mapped to support CPU writes too).
@@ -61,13 +60,6 @@ struct InputsOutputsDx {
   // Separate copy, un-padded and always in fp32
   float* op_policy_mem_final_;
   float* op_value_mem_final_;
-
-  // For recording GPU commands.
-  ID3D12GraphicsCommandList5* command_list_;
-  ID3D12CommandAllocator* command_allocator_;
-
-  // Always need to reset command list / allocator after first time.
-  bool needs_reset_;
 
   const bool uses_policy_map_;
 };
@@ -128,7 +120,7 @@ class DxContext {
   ID3D12CommandAllocator* command_allocator_;
   ID3D12DescriptorHeap* desc_heap_;
   ID3D12Fence* fence_;
-  uint64_t fence_val_;
+  std::atomic<uint64_t> fence_val_;
   ShaderWrapper shader_wrapper_;
 
   std::atomic<unsigned int> next_slot_in_desc_heap_;
@@ -147,13 +139,16 @@ class DxContext {
 
   ID3D12Device5* getDevice() { return device_; }
   ID3D12GraphicsCommandList5* getCommandList() { return command_list_; }
+  ID3D12CommandQueue* getCommandQueue() { return command_queue_; }
+  ID3D12Fence* getFence() { return fence_; }
+  uint64_t getFenceVal() { return fence_val_; }
   ShaderWrapper* getShaderWrapper() { return &shader_wrapper_; }
 
   // util functions
   void CreateAlloc(size_t size, D3D12_HEAP_TYPE type, DXAlloc& alloc,
                    bool fp16);
   void uavBarrier(ID3D12GraphicsCommandList5* cl = nullptr);
-  uint64_t flushCL(ID3D12GraphicsCommandList5 *cl = nullptr);
+  uint64_t flushCL(ID3D12GraphicsCommandList5* cl = nullptr);
   void waitForGPU(uint64_t fence_val = 0);
   void resetCL(ID3D12GraphicsCommandList5* cl = nullptr,
                ID3D12CommandAllocator* ca = nullptr, bool reset = true);
@@ -168,9 +163,29 @@ class DxContext {
                      bool allnewline = false);
 };
 
+struct PerThreadData {
+  PerThreadData(DxNetwork* network);
+  ~PerThreadData();
+
+  // For recording GPU commands.
+  ID3D12GraphicsCommandList5* command_list_;
+  ID3D12CommandAllocator* command_allocator_;
+
+  bool uses_async_compute_;
+  // Used only when async compute is enabled.
+  ID3D12CommandQueue* command_queue_;
+  DXAlloc tensor_mem_[4];
+  uint64_t fence_val_;
+  ID3D12Fence* fence_;
+  int queue_index_;
+
+  // Always need to reset command list / allocator after first time.
+  bool needs_reset_;
+};
+
 class DxNetwork : public Network {
   friend struct InputsOutputsDx;
-
+  friend struct PerThreadData;
  public:
   DxNetwork(const WeightsFile& file, const OptionsDict& options);
   ~DxNetwork();
@@ -217,11 +232,18 @@ class DxNetwork : public Network {
   std::unique_ptr<ConvMetaCommand> resi_block_conv_2_metacommand_;
   std::unique_ptr<ConvMetaCommand> policy_conv_metacommand_;
 
-  // In device memory.
+  bool enable_async_compute_;
+  std::atomic<unsigned int> num_queues_created_;
+
+  // Memory holding intermediate layer data for running the network.
+  // This is allocated only when async compute is disabled
+  // When async compute is enabled, InputsOutputs structure owns tensor memory.
   DXAlloc tensor_mem_[4];
+  size_t tensor_mem_size_;
 
   mutable std::mutex inputs_outputs_lock_;
   std::list<std::unique_ptr<InputsOutputsDx>> free_inputs_outputs_;
+  std::map<std::thread::id, std::unique_ptr<PerThreadData>> per_thread_data_;
 };
 
 };  // namespace lczero
