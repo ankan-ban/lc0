@@ -855,6 +855,7 @@ PerThreadData::PerThreadData(DxNetwork* network) {
   ID3D12Device* device = dx_context->getDevice();
 
   queue_index_ = network->num_queues_created_++;
+  queue_index_++;   // Ankan - hack! put all work in compute queues.
   D3D12_COMMAND_LIST_TYPE cl_type = (uses_async_compute_ && (queue_index_ > 0))
                                         ? D3D12_COMMAND_LIST_TYPE_COMPUTE
                                         : D3D12_COMMAND_LIST_TYPE_DIRECT;
