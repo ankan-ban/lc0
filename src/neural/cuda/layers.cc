@@ -815,8 +815,10 @@ void FusedWinogradConvSELayer<DataType>::LoadSEWeights(float* w1, float* b1,
 void cublasRowMjaorMatrixMul(const half* A, const half* B, half* Out, int M,
                              int N, int K, int batchSize, cublasHandle_t cublas,
                              int algo = -1) {
-  half halfOne = (half)1.0f;
-  half halfZero = (half)0.0f;
+  __half_raw one_h{0x3C00};
+  __half_raw zero_h{0};
+  half halfOne = one_h;
+  half halfZero = zero_h;
 
   // dimensions of matrix A = M x K
   // dimensions of matrix B = K x N
@@ -835,12 +837,13 @@ void cublasRowMjaorMatrixMul(const float* A, const float* B, float* Out, int M,
                              int algo = -1) {
   float floatOne  = 1.0f;
   float floatZero = 0.0f;
-#if 0
+#if 1
   ReportCUBLASErrors(cublasGemmStridedBatchedEx(
       cublas, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &floatOne, B, CUDA_R_32F, N,
       N * K, A, CUDA_R_32F, K, K * M, &floatZero, Out, CUDA_R_32F, N, N * M,
       batchSize, CUDA_R_32F, cublasGemmAlgo_t(algo)));
 #else
+  // Much slower on RTX 2060.. why? Maybe a cublas bug :-/
   ReportCUBLASErrors(cublasSgemmStridedBatched(
       cublas, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &floatOne, B, N,
       N * K, A, K, K * M, &floatZero, Out, N, N * M,
