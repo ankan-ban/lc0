@@ -837,7 +837,7 @@ void cublasRowMjaorMatrixMul(const float* A, const float* B, float* Out, int M,
                              int algo = -1) {
   float floatOne  = 1.0f;
   float floatZero = 0.0f;
-#if 1
+#if 0
   ReportCUBLASErrors(cublasGemmStridedBatchedEx(
       cublas, CUBLAS_OP_N, CUBLAS_OP_N, N, M, K, &floatOne, B, CUDA_R_32F, N,
       N * K, A, CUDA_R_32F, K, K * M, &floatZero, Out, CUDA_R_32F, N, N * M,
